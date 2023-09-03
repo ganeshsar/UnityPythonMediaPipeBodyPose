@@ -106,7 +106,7 @@ class BodyThread(threading.Thread):
                         for i in range(0,33):
                             self.data += "{}|{}|{}|{}\n".format(i,hand_world_landmarks.landmark[i].x,hand_world_landmarks.landmark[i].y,hand_world_landmarks.landmark[i].z)
                     
-                    s = self.data.encode('ascii') 
+                    s = self.data.encode('utf-8') 
                     try:     
                         self.pipe.write(struct.pack('I', len(s)) + s)   
                         self.pipe.seek(0)    

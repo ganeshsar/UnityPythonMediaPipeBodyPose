@@ -202,6 +202,8 @@ public class PipeServer : MonoBehaviour
 
     private void Start()
     {
+        System.Globalization.CultureInfo.DefaultThreadCurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+
         body = new Body(lParent,landmarkPrefab,linePrefab,landmarkScale,enableHead?headPrefab:null);
 
         Thread t = new Thread(new ThreadStart(Run));
@@ -233,6 +235,8 @@ public class PipeServer : MonoBehaviour
 
     void Run()
     {
+        System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+
         // Open the named pipe.
         server = new NamedPipeServerStream("UnityMediaPipeBody",PipeDirection.InOut, 99, PipeTransmissionMode.Message);
 
@@ -240,7 +244,7 @@ public class PipeServer : MonoBehaviour
         server.WaitForConnection();
 
         print("Connected.");
-        var br = new BinaryReader(server);
+        var br = new BinaryReader(server, Encoding.UTF8);
 
         while (true)
         {
