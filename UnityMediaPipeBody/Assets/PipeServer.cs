@@ -13,21 +13,31 @@ using UnityEngine;
 
 public class PipeServer : MonoBehaviour
 {
-    public Transform rParent;
-    public Transform lParent;
+    public Transform parent;
     public GameObject landmarkPrefab;
     public GameObject linePrefab;
     public GameObject headPrefab;
+    public bool anchoredBody = false;
     public bool enableHead = true;
     public float multiplier = 10f;
     public float landmarkScale = 1f;
     public float maxSpeed = 50f;
-    public float debug_samplespersecond;
+    public int samplesForPose = 1;
 
-    NamedPipeServerStream server;
+    private Body body;
+    private NamedPipeServerStream server;
 
     const int LANDMARK_COUNT = 33;
     const int LINES_COUNT = 11;
+
+    private Vector3 GetNormal(Vector3 p1, Vector3 p2, Vector3 p3)
+    {
+        Vector3 u = p2 - p1;
+        Vector3 v = p3 - p1;
+        Vector3 n = new Vector3((u.y * v.z - u.z * v.y), (u.z * v.x - u.x * v.z), (u.x * v.y - u.y * v.x));
+        float nl = Mathf.Sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        return new Vector3(n[0] / nl, n[1] / nl, n[2] / nl);
+    }
 
     public struct AccumulatedBuffer
     {
@@ -47,18 +57,29 @@ public class PipeServer : MonoBehaviour
         public Vector3[] localPositionTargets = new Vector3[LANDMARK_COUNT];
         public GameObject[] instances = new GameObject[LANDMARK_COUNT];
         public LineRenderer[] lines = new LineRenderer[LINES_COUNT];
+        public GameObject head;
 
         public bool active;
+
+        public bool setCalibration = false;
+        public Vector3 calibrationOffset;
+
+        public Vector3 virtualHeadPosition;
 
         public Body(Transform parent, GameObject landmarkPrefab, GameObject linePrefab,float s, GameObject headPrefab)
         {
             this.parent = parent;
             for (int i = 0; i < instances.Length; ++i)
             {
-                instances[i] = Instantiate(landmarkPrefab);// GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                instances[i] = Instantiate(landmarkPrefab);
                 instances[i].transform.localScale = Vector3.one * s;
                 instances[i].transform.parent = parent;
                 instances[i].name = ((Landmark)i).ToString();
+
+                if (headPrefab && i >= 0 && i <= 10)
+                {
+                    instances[i].transform.localScale = Vector3.one * 0f;
+                }
             }
             for (int i = 0; i < lines.Length; ++i)
             {
@@ -67,8 +88,7 @@ public class PipeServer : MonoBehaviour
 
             if (headPrefab)
             {
-                GameObject head = Instantiate(headPrefab);
-                head.transform.parent = instances[(int)Landmark.NOSE].transform;
+                head = Instantiate(headPrefab);
                 head.transform.localPosition = headPrefab.transform.position;
                 head.transform.localRotation = headPrefab.transform.localRotation;
                 head.transform.localScale = headPrefab.transform.localScale;
@@ -125,17 +145,25 @@ public class PipeServer : MonoBehaviour
             lines[8].SetPosition(2, Position((Landmark)19));
             lines[8].SetPosition(3, Position((Landmark)15));
 
-            lines[9].positionCount = 2;
-            lines[9].SetPosition(0, Position((Landmark)10));
-            lines[9].SetPosition(1, Position((Landmark)9));
+            if (!head)
+            {
+                lines[9].positionCount = 2;
+                lines[9].SetPosition(0, Position((Landmark)10));
+                lines[9].SetPosition(1, Position((Landmark)9));
 
-
-            lines[10].positionCount = 5;
-            lines[10].SetPosition(0, Position((Landmark)8));
-            lines[10].SetPosition(1, Position((Landmark)5));
-            lines[10].SetPosition(2, Position((Landmark)0));
-            lines[10].SetPosition(3, Position((Landmark)2));
-            lines[10].SetPosition(4, Position((Landmark)7));
+                lines[10].positionCount = 5;
+                lines[10].SetPosition(0, Position((Landmark)8));
+                lines[10].SetPosition(1, Position((Landmark)5));
+                lines[10].SetPosition(2, Position((Landmark)0));
+                lines[10].SetPosition(3, Position((Landmark)2));
+                lines[10].SetPosition(4, Position((Landmark)7));
+            }
+        }
+        public void Calibrate()
+        {
+            Vector3 centre = (localPositionTargets[(int)Landmark.LEFT_HIP] + localPositionTargets[(int)Landmark.RIGHT_HIP]) / 2f;
+            calibrationOffset = -centre;
+            setCalibration = true;
         }
 
         public float GetAngle(Landmark referenceFrom, Landmark referenceTo, Landmark from, Landmark to)
@@ -159,17 +187,11 @@ public class PipeServer : MonoBehaviour
 
     }
 
-    private Body body;
-
-    public int samplesForPose = 1;
-
-    public bool active;
-
     private void Start()
     {
         System.Globalization.CultureInfo.DefaultThreadCurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
 
-        body = new Body(lParent,landmarkPrefab,linePrefab,landmarkScale,enableHead?headPrefab:null);
+        body = new Body(parent,landmarkPrefab,linePrefab,landmarkScale,enableHead?headPrefab:null);
 
         Thread t = new Thread(new ThreadStart(Run));
         t.Start();
@@ -179,26 +201,46 @@ public class PipeServer : MonoBehaviour
     {
         UpdateBody(body);
     }
-
     private void UpdateBody(Body b)
     {
+        if (b.active == false) return;
+
         for (int i = 0; i < LANDMARK_COUNT; ++i)
         {
             if (b.positionsBuffer[i].accumulatedValuesCount < samplesForPose)
                 continue;
-            // b.instances[i].transform.localPosition = b.positionsBuffer[i] / (float)b.samplesCounter * multiplier;
             b.localPositionTargets[i] = b.positionsBuffer[i].value / (float)b.positionsBuffer[i].accumulatedValuesCount * multiplier;
             b.positionsBuffer[i] = new AccumulatedBuffer(Vector3.zero,0);
         }
 
+        if (!b.setCalibration)
+        {
+            print("Set Calibration Data");
+            b.Calibrate();
+
+            if(FindObjectOfType<CameraController>())
+                FindObjectOfType<CameraController>().Calibrate(b.instances[(int)Landmark.NOSE].transform);
+        }
+
         for (int i = 0; i < LANDMARK_COUNT; ++i)
         {
-            b.instances[i].transform.localPosition=Vector3.MoveTowards(b.instances[i].transform.localPosition, b.localPositionTargets[i], Time.deltaTime * maxSpeed);
+            b.instances[i].transform.localPosition=Vector3.MoveTowards(b.instances[i].transform.localPosition, b.localPositionTargets[i]+b.calibrationOffset, Time.deltaTime * maxSpeed);
         }
         b.UpdateLines();
+
+        b.virtualHeadPosition = (b.Position(Landmark.RIGHT_EAR) + b.Position(Landmark.LEFT_EAR)) / 2f;
+
+        if (b.head)
+        {
+            // Experimental method and getting the head pose.
+            b.head.transform.position = b.virtualHeadPosition+Vector3.up* .5f;
+            Vector3 n1 = Vector3.Scale(new Vector3(.1f, 1f, .1f), GetNormal(b.Position((Landmark)0), b.Position((Landmark)8), b.Position((Landmark)7))).normalized;
+            Vector3 n2 = Vector3.Scale(new Vector3(1f, .1f, 1f), GetNormal(b.Position((Landmark)0), b.Position((Landmark)4), b.Position((Landmark)1))).normalized;
+            b.head.transform.rotation = Quaternion.LookRotation(-n2, n1);
+        }
     }
 
-    void Run()
+    private void Run()
     {
         System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
 
@@ -218,17 +260,22 @@ public class PipeServer : MonoBehaviour
                 Body h = body;
                 var len = (int)br.ReadUInt32();
                 var str = new string(br.ReadChars(len));
-
                 string[] lines = str.Split('\n');
+
                 foreach (string l in lines)
                 {
                     if (string.IsNullOrWhiteSpace(l))
                         continue;
+
                     string[] s = l.Split('|');
-                    if (s.Length < 4) continue;
+                    if (s.Length < 5) continue;
+
+                    if (anchoredBody && s[0] != "ANCHORED") continue;
+                    if (!anchoredBody && s[0] != "FREE") continue;
+
                     int i;
-                    if (!int.TryParse(s[0], out i)) continue;
-                    h.positionsBuffer[i].value += new Vector3(float.Parse(s[1]), float.Parse(s[2]), float.Parse(s[3]));
+                    if (!int.TryParse(s[1], out i)) continue;
+                    h.positionsBuffer[i].value += new Vector3(float.Parse(s[2]), float.Parse(s[3]), float.Parse(s[4]));
                     h.positionsBuffer[i].accumulatedValuesCount += 1;
                     h.active = true;
                 }

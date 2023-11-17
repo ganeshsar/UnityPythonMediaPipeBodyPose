@@ -1,4 +1,4 @@
-#define FLIP // Comment out this line to flip the landmarks (internally) [technically need to flip here, but kept like this for backward compatibility].
+// #define FLIP // Comment out this line to flip the landmarks (internally) [technically need to flip here, but kept like this for backward compatibility].
 // NOTE: image = cv2.flip(image, 1) in the Python side may also be of interest to you as well.
 
 #if FLIP

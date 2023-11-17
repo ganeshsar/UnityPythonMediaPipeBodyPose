@@ -2,6 +2,7 @@
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+import numpy as np
 
 import cv2
 import threading
@@ -18,7 +19,7 @@ class CaptureThread(threading.Thread):
     counter = 0
     timer = 0.0
     def run(self):
-        self.cap = cv2.VideoCapture(0) # sometimes it can take a while for certain video captures
+        self.cap = cv2.VideoCapture(global_vars.WEBCAM_INDEX) # sometimes it can take a while for certain video captures 4
         if global_vars.USE_CUSTOM_CAM_SETTINGS:
             self.cap.set(cv2.CAP_PROP_FPS, global_vars.FPS)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,global_vars.WIDTH)
@@ -46,6 +47,39 @@ class BodyThread(threading.Thread):
     timeSinceCheckedConnection = 0
     timeSincePostStatistics = 0
 
+    def compute_real_world_landmarks(self,world_landmarks,image_landmarks,image_shape):
+        try:
+            # pseudo camera internals
+            # if you properly calibrated your camera tracking quality can improve...
+            frame_height,frame_width, channels = image_shape
+            focal_length = frame_width*.6
+            center = (frame_width/2, frame_height/2)
+            camera_matrix = np.array(
+                                    [[focal_length, 0, center[0]],
+                                    [0, focal_length, center[1]],
+                                    [0, 0, 1]], dtype = "double"
+                                    )
+            distortion = np.zeros((4, 1))
+
+            success, rotation_vector, translation_vector = cv2.solvePnP(objectPoints= world_landmarks, 
+                                                                        imagePoints= image_landmarks, 
+                                                                        cameraMatrix= camera_matrix, 
+                                                                        distCoeffs= distortion,
+                                                                        flags=cv2.SOLVEPNP_SQPNP)
+            transformation = np.eye(4)
+            transformation[0:3, 3] = translation_vector.squeeze()
+
+            # transform model coordinates into homogeneous coordinates
+            model_points_hom = np.concatenate((world_landmarks, np.ones((33, 1))), axis=1)
+
+            # apply the transformation
+            world_points = model_points_hom.dot(np.linalg.inv(transformation).T)
+
+            return world_points
+        except AttributeError:
+            print("Attribute Error: shouldn't happen frequently")
+            return world_landmarks 
+
     def run(self):
         mp_drawing = mp.solutions.drawing_utils
         mp_pose = mp.solutions.pose
@@ -68,7 +102,7 @@ class BodyThread(threading.Thread):
                 image = capture.frame
                                 
                 # Image transformations and stuff
-                image = cv2.flip(image, 1)
+                #image = cv2.flip(image, 1)
                 image.flags.writeable = global_vars.DEBUG
                 
                 # Detections
@@ -87,7 +121,7 @@ class BodyThread(threading.Thread):
                                                 mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=2, circle_radius=2),
                                                 )
                     cv2.imshow('Body Tracking', image)
-                    cv2.waitKey(3)
+                    cv2.waitKey(1)
 
                 if self.pipe==None and time.time()-self.timeSinceCheckedConnection>=1:
                     try:
@@ -101,10 +135,22 @@ class BodyThread(threading.Thread):
                     # Set up data for piping
                     self.data = ""
                     i = 0
+                    
                     if results.pose_world_landmarks:
-                        hand_world_landmarks = results.pose_world_landmarks
+                        image_landmarks = results.pose_landmarks
+                        world_landmarks = results.pose_world_landmarks
+
+                        model_points = np.float32([[-l.x, -l.y, -l.z] for l in world_landmarks.landmark])
+                        image_points = np.float32([[l.x * image.shape[1], l.y * image.shape[0]] for l in image_landmarks.landmark])
+                        
+                        body_world_landmarks_world = self.compute_real_world_landmarks(model_points,image_points,image.shape)
+                        body_world_landmarks = results.pose_world_landmarks
+                        
                         for i in range(0,33):
-                            self.data += "{}|{}|{}|{}\n".format(i,hand_world_landmarks.landmark[i].x,hand_world_landmarks.landmark[i].y,hand_world_landmarks.landmark[i].z)
+                            self.data += "FREE|{}|{}|{}|{}\n".format(i,body_world_landmarks_world[i][0],body_world_landmarks_world[i][1],body_world_landmarks_world[i][2])
+                        for i in range(0,33):
+                            self.data += "ANCHORED|{}|{}|{}|{}\n".format(i,-body_world_landmarks.landmark[i].x,-body_world_landmarks.landmark[i].y,-body_world_landmarks.landmark[i].z)
+
                     
                     s = self.data.encode('utf-8') 
                     try:     
